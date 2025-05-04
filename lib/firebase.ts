@@ -3,6 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from "firebase/auth";
 import { getDatabase } from "firebase/database";
 import { getStorage } from "firebase/storage";
+import { getVertexAI }    from "firebase/vertexai-preview";  // ← preview
 
 const firebaseConfig = {
   apiKey: "AIzaSyB6UXHfZdbn_jSJauHhbTwBvrFGsKnPeTw",
@@ -16,10 +17,13 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const provider = new GoogleAuthProvider();
-const db = getDatabase(app);
-const storage = getStorage(app);
 
-export { auth, provider, signInWithPopup, signOut ,db , storage };
+export const app = initializeApp(firebaseConfig);
+
+export const auth     = getAuth(app);
+export const provider = new GoogleAuthProvider();
+export { signInWithPopup, signOut };
+
+export const db        = getDatabase(app);
+export const storage   = getStorage(app);
+export const vertexAI  = getVertexAI(app);
