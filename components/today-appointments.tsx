@@ -163,19 +163,20 @@ const TodayAppointments: React.FC = () => {
   const convertTimeToMinutes = (timeStr: string): number => {
     try {
       if (!timeStr) return 0;
-      const [timePart, ampm] = timeStr.split(" ")
-      let [hours, minutes] = timePart.split(":").map(Number) // Fix: Use const for minutes
-
-      if (ampm?.toUpperCase() === "PM" && hours < 12) hours += 12
-      if (ampm?.toUpperCase() === "AM" && hours === 12) hours = 0
-
-      return hours * 60 + minutes
+      const [timePart, ampm] = timeStr.split(" ");
+      const timeParts = timePart.split(":").map(Number); // Get the parts as a const array
+      let hours = timeParts[0]; // Declare hours with let (as it's reassigned)
+      const minutes = timeParts[1]; // Declare minutes with const (as it's not reassigned)
+  
+      if (ampm?.toUpperCase() === "PM" && hours < 12) hours += 12;
+      if (ampm?.toUpperCase() === "AM" && hours === 12) hours = 0;
+  
+      return hours * 60 + minutes;
     } catch (e) {
       console.error("Error converting time string:", timeStr, e);
-      return 0 // Default value if parsing fails
+      return 0; // Default value if parsing fails
     }
   }
-
   // Changed from opening modal to navigating
   const handleWritePrescription = (appointment: Appointment) => {
     router.push(`/prescriptions/${appointment.patientId}/${appointment.id}`)
