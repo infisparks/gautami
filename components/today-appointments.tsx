@@ -1,19 +1,16 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect } from "react"
-import { db, storage } from "../lib/firebase"
-import { ref, onValue, update } from "firebase/database"
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage"
-import { Calendar, Clock, User, Phone, DollarSign, FileText } from 'lucide-react'
+import { useRouter } from "next/navigation"
+import { db } from "@/lib/firebase"
+import { ref, onValue } from "firebase/database"
+import { Calendar, Clock, User, Phone, DollarSign, FileText } from "lucide-react"
 import { CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { toast } from "react-toastify"
-import { type Doctor, PaymentOptions } from "../types/opd-types"
-import PrescriptionCanvas from "./prescription-canvas"
+import { type Doctor, PaymentOptions } from "@/types/opd-types"
 
 // Import your letterhead
 const LETTERHEAD_URL = "/letterhead.png"
@@ -37,11 +34,10 @@ interface Appointment {
 }
 
 const TodayAppointments: React.FC = () => {
+  const router = useRouter()
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [doctors, setDoctors] = useState<Doctor[]>([])
   const [loading, setLoading] = useState(true)
-  const [prescriptionOpen, setPrescriptionOpen] = useState(false)
-  const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null)
 
   // Get today's date in YYYY-MM-DD format for comparison
   const today = new Date()
@@ -135,11 +131,7 @@ const TodayAppointments: React.FC = () => {
   const convertTimeToMinutes = (timeStr: string): number => {
     try {
       const [timePart, ampm] = timeStr.split(" ")
-    const [hours, minutes] = timePart.split(":").map(Number)
-
-      // if (ampm === "PM" && hours < 12) hours += 12
-      // if (ampm === "AM" && hours === 12) hours = 0
-
+      const [hours, minutes] = timePart.split(":").map(Number)
       return hours * 60 + minutes
     } catch (e) {
       return 0 // Default value if parsing fails
@@ -147,76 +139,8 @@ const TodayAppointments: React.FC = () => {
   }
 
   const handleWritePrescription = (appointment: Appointment) => {
-    setSelectedAppointment(appointment)
-    setPrescriptionOpen(true)
-  }
-
-  const handleClosePrescription = () => {
-    setPrescriptionOpen(false)
-    setSelectedAppointment(null)
-  }
-
-  const handleSavePrescription = async (imageUrl: string) => {
-    if (!selectedAppointment) return
-
-    try {
-      // Update the appointment with the prescription URL
-      const appointmentRef = ref(
-        db,
-        `patients/${selectedAppointment.patientId}/opd/${selectedAppointment.id}`
-      )
-      await update(appointmentRef, { prescriptionUrl: imageUrl })
-
-      // Update local state
-      setAppointments((prev) =>
-        prev.map((app) =>
-          app.id === selectedAppointment.id ? { ...app, prescriptionUrl: imageUrl } : app
-        )
-      )
-
-      // Send WhatsApp message with prescription
-      await sendPrescriptionWhatsApp(selectedAppointment, imageUrl)
-
-      toast.success("Prescription saved and sent successfully!")
-    } catch (error) {
-      console.error("Error saving prescription:", error)
-      toast.error("Failed to save prescription")
-    }
-  }
-
-  const sendPrescriptionWhatsApp = async (appointment: Appointment, prescriptionUrl: string) => {
-    try {
-      const phoneWithCountryCode = `91${appointment.patientPhone.replace(/\D/g, "")}`
-      const doctorName = doctors.find((d) => d.id === appointment.doctor)?.name || "Doctor"
-      
-      const message = `Hello ${appointment.patientName},
-
-Your prescription from ${doctorName} at Gautami Hospital is ready.
-
-Thank you for visiting us today!
-Gautami Hospital`
-
-      await fetch("https://wa.medblisss.com/send-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: "99583991572",
-          number: phoneWithCountryCode,
-          image: prescriptionUrl,
-          caption: message,
-        }),
-      })
-    } catch (error) {
-      console.error("Error sending WhatsApp message:", error)
-      // Don't fail the entire operation if WhatsApp fails
-    }
-  }
-
-  // Function to upload blob to Firebase Storage
-  const uploadToFirebaseStorage = async (blob: Blob, filename: string): Promise<string> => {
-    const fileRef = storageRef(storage, filename)
-    await uploadBytes(fileRef, blob)
-    return await getDownloadURL(fileRef)
+    // Navigate to the prescription page instead of opening a dialog
+    router.push(`/prescription/${appointment.patientId}/${appointment.id}`)
   }
 
   const viewPrescription = (prescriptionUrl: string) => {
@@ -336,18 +260,6 @@ Gautami Hospital`
           </div>
         )}
       </div>
-
-      {selectedAppointment && (
-        <PrescriptionCanvas
-          letterheadUrl={LETTERHEAD_URL}
-          patientName={selectedAppointment.patientName}
-          patientId={selectedAppointment.patientId}
-          appointmentId={selectedAppointment.id}
-          // open={prescriptionOpen}
-          // onClose={handleClosePrescription}
-          onSave={handleSavePrescription}
-        />
-      )}
     </CardContent>
   )
 }
