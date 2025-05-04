@@ -1,4 +1,3 @@
-// components/prescription-canvas.tsx
 "use client"
 
 import type React from "react"
@@ -15,6 +14,7 @@ interface PrescriptionCanvasProps {
   appointmentId: string
   onSave: (canvasBlob: Blob) => Promise<void>
   saving: boolean
+  className?: string
 }
 
 type DrawingTool = "pen" | "eraser"
@@ -26,19 +26,17 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   appointmentId,
   onSave,
   saving,
+  className,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const contextRef = useRef<CanvasRenderingContext2D | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const [isDrawing, setIsDrawing] = useState(false)
   const [color, setColor] = useState("#000000")
   const [lineWidth, setLineWidth] = useState(2)
   const [tool, setTool] = useState<DrawingTool>("pen")
   const [letterheadLoaded, setLetterheadLoaded] = useState(false)
-
-  // Removed Pan/Zoom State and Refs
-
 
   const colors = [
     "#000000", "#FF0000", "#0000FF", "#008000", "#800080", "#FFA500",
@@ -66,8 +64,8 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       if (!canvas) return null
 
       const rect = canvas.getBoundingClientRect()
-      const logicalX = clientX - rect.left;
-      const logicalY = clientY - rect.top;
+      const logicalX = clientX - rect.left
+      const logicalY = clientY - rect.top
 
       return { x: logicalX, y: logicalY }
     },
@@ -84,8 +82,9 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       return
     }
 
+    // Set canvas logical size (A4-like aspect ratio)
     canvas.width = 800
-    canvas.height = 1100
+    canvas.height = 1132 // Adjusted for better A4 ratio (800 * 1.414)
 
     ctx.lineCap = "round"
     ctx.lineJoin = "round"
@@ -97,7 +96,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       letterhead.src = letterheadUrl
       letterhead.onload = () => {
         if (contextRef.current) {
-          contextRef.current.clearRect(0, 0, canvas.width, canvas.height);
+          contextRef.current.clearRect(0, 0, canvas.width, canvas.height)
           contextRef.current.drawImage(letterhead, 0, 0, canvas.width, canvas.height)
           setLetterheadLoaded(true)
         }
@@ -116,106 +115,94 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       }
     }
 
-    loadLetterhead();
+    loadLetterhead()
 
     return () => {
-      contextRef.current = null;
-    };
+      contextRef.current = null
+    }
   }, [letterheadUrl])
-
 
   useEffect(() => {
     if (!contextRef.current) return
     contextRef.current.strokeStyle = tool === "eraser" ? "#ffffff" : color
-    contextRef.current.lineWidth = tool === "eraser" ? lineWidth * 4 : lineWidth;
-    contextRef.current.globalCompositeOperation = tool === "eraser" ? "destination-out" : "source-over";
+    contextRef.current.lineWidth = tool === "eraser" ? lineWidth * 4 : lineWidth
+    contextRef.current.globalCompositeOperation = tool === "eraser" ? "destination-out" : "source-over"
   }, [color, lineWidth, tool])
 
-  // --- Mouse Handlers (for Pen/Eraser) ---
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    if (!contextRef.current || !letterheadLoaded || (tool !== "pen" && tool !== "eraser")) return // Only start drawing if tool is pen/eraser
+    e.preventDefault()
+    if (!contextRef.current || !letterheadLoaded || (tool !== "pen" && tool !== "eraser")) return
 
-    setIsDrawing(true);
-    const coords = getLogicalCoords(e.clientX, e.clientY);
-    if (!coords) return;
-    contextRef.current.beginPath();
-    contextRef.current.moveTo(coords.x, coords.y);
+    setIsDrawing(true)
+    const coords = getLogicalCoords(e.clientX, e.clientY)
+    if (!coords) return
+    contextRef.current.beginPath()
+    contextRef.current.moveTo(coords.x, coords.y)
   }
 
   const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    if (!isDrawing || !contextRef.current || !letterheadLoaded || (tool !== "pen" && tool !== "eraser")) return // Only draw if isDrawing and tool is pen/eraser
+    e.preventDefault()
+    if (!isDrawing || !contextRef.current || !letterheadLoaded || (tool !== "pen" && tool !== "eraser")) return
 
-    const coords = getLogicalCoords(e.clientX, e.clientY);
-    if (!coords) return;
-    contextRef.current.lineTo(coords.x, coords.y);
-    contextRef.current.stroke();
+    const coords = getLogicalCoords(e.clientX, e.clientY)
+    if (!coords) return
+    contextRef.current.lineTo(coords.x, coords.y)
+    contextRef.current.stroke()
   }
 
   const stopDrawing = () => {
-    // Stop drawing only if a drawing gesture was active
     if (isDrawing && contextRef.current && (tool === "pen" || tool === "eraser")) {
-        contextRef.current.closePath();
+      contextRef.current.closePath()
     }
-    setIsDrawing(false);
-
+    setIsDrawing(false)
   }
 
-    // --- Touch Handlers (for Pen/Eraser) ---
-    const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
-        e.preventDefault();
-        if (!contextRef.current || !letterheadLoaded || e.touches.length !== 1 || (tool !== "pen" && tool !== "eraser")) return; // Only 1 finger touch for pen/eraser
+  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    if (!contextRef.current || !letterheadLoaded || e.touches.length !== 1 || (tool !== "pen" && tool !== "eraser")) return
 
-        setIsDrawing(true);
-        const touch = e.touches[0];
-        const coords = getLogicalCoords(touch.clientX, touch.clientY);
-        if (!coords) return;
-        contextRef.current.beginPath();
-        contextRef.current.moveTo(coords.x, coords.y);
+    setIsDrawing(true)
+    const touch = e.touches[0]
+    const coords = getLogicalCoords(touch.clientX, touch.clientY)
+    if (!coords) return
+    contextRef.current.beginPath()
+    contextRef.current.moveTo(coords.x, coords.y)
+  }
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    if (!isDrawing || !contextRef.current || !letterheadLoaded || e.touches.length !== 1 || (tool !== "pen" && tool !== "eraser")) return
+
+    const touch = e.touches[0]
+    const coords = getLogicalCoords(touch.clientX, touch.clientY)
+    if (!coords) return
+    contextRef.current.lineTo(coords.x, coords.y)
+    contextRef.current.stroke()
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length === 0 && isDrawing && contextRef.current && (tool === "pen" || tool === "eraser")) {
+      contextRef.current.closePath()
+      setIsDrawing(false)
     }
-
-    const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
-        e.preventDefault();
-        if (!isDrawing || !contextRef.current || !letterheadLoaded || e.touches.length !== 1 || (tool !== "pen" && tool !== "eraser")) return; // Only draw if isDrawing and 1 finger touch for pen/eraser
-
-        const touch = e.touches[0];
-        const coords = getLogicalCoords(touch.clientX, touch.clientY);
-        if (!coords) return;
-        contextRef.current.lineTo(coords.x, coords.y);
-        contextRef.current.stroke();
+    if (e.touches.length > 0) {
+      setIsDrawing(false)
     }
+  }
 
-    const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
-         // Stop drawing only if the last touch for the active drawing gesture is lifted
-        if (e.touches.length === 0 && isDrawing && contextRef.current && (tool === "pen" || tool === "eraser")) {
-             contextRef.current.closePath();
-             setIsDrawing(false);
-        }
-        // If touches remain (e.g. multi-touch gesture wasn't for drawing, or lift one finger from multi-touch)
-        // we don't stop the drawing state if the tool is pen/eraser and isDrawing was true.
-        // However, since we disabled multi-touch for drawing/pan/zoom, a touch end with remaining fingers
-        // likely means the initial touchstart didn't trigger drawing, so just ensure isDrawing is false.
-        if (e.touches.length > 0) {
-             setIsDrawing(false);
-        }
+  const handleTouchCancel = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (isDrawing && contextRef.current && (tool === "pen" || tool === "eraser")) {
+      contextRef.current.closePath()
     }
-
-    const handleTouchCancel = (e: React.TouchEvent<HTMLCanvasElement>) => {
-        // Similar to touchEnd, if the gesture is cancelled, stop drawing
-        if (isDrawing && contextRef.current && (tool === "pen" || tool === "eraser")) {
-            contextRef.current.closePath();
-        }
-        setIsDrawing(false);
-    }
-
+    setIsDrawing(false)
+  }
 
   const clearCanvas = () => {
     if (!contextRef.current || !canvasRef.current) return
 
     if (window.confirm("Are you sure you want to clear the prescription?")) {
-      const canvas = canvasRef.current;
-      contextRef.current.clearRect(0, 0, canvas.width, canvas.height);
+      const canvas = canvasRef.current
+      contextRef.current.clearRect(0, 0, canvas.width, canvas.height)
 
       const letterhead = new Image()
       letterhead.crossOrigin = "anonymous"
@@ -226,14 +213,14 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
         }
       }
       letterhead.onerror = (e) => {
-        console.error("Error reloading letterhead:", e);
-        toast.error("Failed to reload letterhead background.");
+        console.error("Error reloading letterhead:", e)
+        toast.error("Failed to reload letterhead background.")
         if (contextRef.current && canvas) {
-          contextRef.current.fillStyle = "#ffffff";
-          contextRef.current.fillRect(0, 0, canvas.width, canvas.height);
-           contextRef.current.strokeStyle = "#000000"
-           contextRef.current.lineWidth = 2
-           contextRef.current.strokeRect(5, 5, canvas.width - 10, canvas.height - 10)
+          contextRef.current.fillStyle = "#ffffff"
+          contextRef.current.fillRect(0, 0, canvas.width, canvas.height)
+          contextRef.current.strokeStyle = "#000000"
+          contextRef.current.lineWidth = 2
+          contextRef.current.strokeRect(5, 5, canvas.width - 10, canvas.height - 10)
         }
       }
     }
@@ -241,37 +228,31 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
 
   const handleSaveClick = () => {
     if (!canvasRef.current) {
-      toast.error("Canvas not ready.");
-      return;
+      toast.error("Canvas not ready.")
+      return
     }
 
     canvasRef.current.toBlob((blob) => {
       if (blob) {
         onSave(blob).catch(err => {
-          console.error("Save failed in parent:", err);
-          toast.error("Failed to save prescription.");
-        });
+          console.error("Save failed in parent:", err)
+          toast.error("Failed to save prescription.")
+        })
       } else {
-        toast.error("Failed to convert canvas to image.");
+        toast.error("Failed to convert canvas to image.")
       }
-    }, "image/png");
+    }, "image/png")
   }
 
-    const getCursorStyle = () => {
-        if (!letterheadLoaded) return 'wait';
-        // Cursor is always crosshair for drawing/erasing tools
-        return 'crosshair';
-    };
-
+  const getCursorStyle = () => {
+    if (!letterheadLoaded) return 'wait'
+    return 'crosshair'
+  }
 
   return (
-    // Removed p-4, h-full, w-full from outer div to reduce padding/margin
-    <div className="flex flex-col items-center relative">
-      {/* Control Bar - Positioned at the top */}
-      {/* Adjusted layout to group tools and color/width */}
-      {/* Removed shadow-md, rounded-md from control bar background */}
-      <div className="flex flex-col sm:flex-row gap-2 mb-4 w-full justify-center bg-white dark:bg-gray-800 p-3 z-10 sticky top-0 left-0 right-0">
-
+    <div className={`flex flex-col min-h-0 ${className}`}>
+      {/* Control Bar */}
+      <div className="flex flex-col sm:flex-row gap-2 mb-2 w-full justify-center bg-white dark:bg-gray-800 p-3 z-10 sticky top-0 left-0 right-0">
         {/* Drawing Tools */}
         <div className="flex items-center gap-2 justify-center">
           <Button size="sm" variant={tool === "pen" ? "default" : "outline"} onClick={() => setTool("pen")}>
@@ -285,83 +266,71 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
         </div>
 
         {/* Color and Width Controls */}
-        {/* Only show color/width controls when Pen or Eraser is selected */}
         {(tool === "pen" || tool === "eraser") && (
-           <div className="flex items-center gap-2 justify-center">
-              <span className="text-sm">Width:</span>
-              <Slider
-                className="w-24"
-                value={[lineWidth]}
-                min={1}
-                max={tool === "eraser" ? 5 : 10} // Eraser max width can be different
-                step={1}
-                onValueChange={(value) => setLineWidth(value[0])}
-              />
-
-              {tool === "pen" && ( // Only show color picker for Pen tool
-                 <div className="flex items-center gap-2">
-                    <span className="text-sm">Color:</span>
-                      <input
-                       type="color"
-                       value={color}
-                       onChange={(e) => setColor(e.target.value)}
-                       className="w-8 h-8 border-0 p-0 cursor-pointer"
-                      />
-                      <div className="flex gap-1">
-                         {colors.map((c) => (
-                          <div
-                           key={c}
-                           className="w-6 h-6 rounded-full cursor-pointer border border-gray-300"
-                           style={{ backgroundColor: c }}
-                           onClick={() => { setTool("pen"); setColor(c); }} // Select pen tool when choosing color
-                           />
-                         ))}
-                      </div>
-                  </div>
-               )}
-           </div>
+          <div className="flex items-center gap-2 justify-center">
+            <span className="text-sm">Width:</span>
+            <Slider
+              className="w-24"
+              value={[lineWidth]}
+              min={1}
+              max={tool === "eraser" ? 5 : 10}
+              step={1}
+              onValueChange={(value) => setLineWidth(value[0])}
+            />
+            {tool === "pen" && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm">Color:</span>
+                <input
+                  type="color"
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                  className="w-8 h-8 border-0 p-0 cursor-pointer"
+                />
+                <div className="flex gap-1">
+                  {colors.map((c) => (
+                    <div
+                      key={c}
+                      className="w-6 h-6 rounded-full cursor-pointer border border-gray-300"
+                      style={{ backgroundColor: c }}
+                      onClick={() => { setTool("pen"); setColor(c); }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2 justify-center">
-           <Button size="sm" variant="destructive" onClick={clearCanvas} disabled={!letterheadLoaded}>
-             <Trash2 className="h-4 w-4 mr-1" />
-             Clear
-           </Button>
-           {/* Save button is handled by the parent component */}
+          <Button size="sm" variant="destructive" onClick={clearCanvas} disabled={!letterheadLoaded}>
+            <Trash2 className="h-4 w-4 mr-1" />
+            Clear
+          </Button>
         </div>
       </div>
 
-      {/* Canvas Container - Contains the canvas at a fixed size */}
-      {/* Removed padding/margins that might cause cropping */}
-      <div ref={containerRef} className="relative"
-          style={{ cursor: getCursorStyle() }} // Apply cursor style
-      >
-          {/* Canvas element - fixed logical size, no transforms, no internal overflow */}
+      {/* Canvas Container */}
+      <div ref={containerRef} className="flex-1 relative overflow-auto" style={{ cursor: getCursorStyle() }}>
         <canvas
           ref={canvasRef}
           onMouseDown={startDrawing}
           onMouseMove={draw}
           onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing} // Important to stop drawing if mouse leaves canvas
-          // Added touch handlers for drawing/erasing
+          onMouseLeave={stopDrawing}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchCancel}
-          // Removed bg-white, shadow-lg, border classes from canvas itself
-          className=""
+          className="absolute top-0 left-0"
           style={{
-             // Explicitly set width/height for logical size
-            width: '800px',
-            height: '1100px',
-             // Cursor set here
-             cursor: getCursorStyle(),
-             // Ensure display block and position
-             display: 'block',
-             position: 'relative',
-             top: 0,
-             left: 0
+            width: '100%',
+            height: '100%',
+            maxWidth: '800px',
+            maxHeight: '1132px',
+            objectFit: 'contain',
+            display: 'block',
+            cursor: getCursorStyle(),
           }}
         />
       </div>
@@ -369,4 +338,4 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   )
 }
 
-export default PrescriptionCanvas;
+export default PrescriptionCanvas

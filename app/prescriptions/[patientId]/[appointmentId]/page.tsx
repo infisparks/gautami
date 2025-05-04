@@ -225,7 +225,8 @@ Gautami Hospital`
         </div>
       </header>
 
-      <div className="flex-1 overflow-hidden">
+     {/* Modified div to ensure it takes full height */}
+      <div className="flex-1 overflow-hidden flex flex-col">
         <PrescriptionCanvas
           letterheadUrl={LETTERHEAD_URL}
           patientName={appointment.patientName}
@@ -233,6 +234,8 @@ Gautami Hospital`
           appointmentId={appointment.id}
           onSave={handleSavePrescription}
           saving={saving} // Pass saving state down
+          // Add className to pass down to the root element of PrescriptionCanvas
+          className="flex-1"
         />
       </div>
     </div>
