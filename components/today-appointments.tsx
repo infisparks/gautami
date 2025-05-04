@@ -135,10 +135,10 @@ const TodayAppointments: React.FC = () => {
   const convertTimeToMinutes = (timeStr: string): number => {
     try {
       const [timePart, ampm] = timeStr.split(" ")
-      let [hours, minutes] = timePart.split(":").map(Number)
+    const [hours, minutes] = timePart.split(":").map(Number)
 
-      if (ampm === "PM" && hours < 12) hours += 12
-      if (ampm === "AM" && hours === 12) hours = 0
+      // if (ampm === "PM" && hours < 12) hours += 12
+      // if (ampm === "AM" && hours === 12) hours = 0
 
       return hours * 60 + minutes
     } catch (e) {
