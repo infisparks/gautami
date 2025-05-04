@@ -235,7 +235,7 @@ Gautami Hospital`
           onSave={handleSavePrescription}
           saving={saving} // Pass saving state down
           // Add className to pass down to the root element of PrescriptionCanvas
-          className="flex-1"
+        //   className="flex-1"
         />
       </div>
     </div>
