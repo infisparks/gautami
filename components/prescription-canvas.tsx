@@ -1,739 +1,618 @@
-import React from "react";
-import { useRef, useState, useEffect, useCallback } from "react";
-import { Eraser, Pencil, Save, Trash2, Undo, ZoomIn, ZoomOut, RotateCcw, PenTool, MoveHorizontal } from "lucide-react";
+// components/prescription-canvas.tsx
+"use client"
 
-// Fallback asset - in a real app, import your actual letterhead
-const fallbackLetterhead = "https://images.pexels.com/photos/5905885/pexels-photo-5905885.jpeg";
-
-type SrcLike = string | { src: string }; // next-image static import object
+import type React from "react"
+import { useRef, useState, useEffect, useCallback } from "react"
+import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
+import { Eraser, Pencil, Save, Trash2, Move } from "lucide-react"
+import { toast } from "react-toastify"
 
 interface PrescriptionCanvasProps {
-  letterheadUrl?: SrcLike;
-  patientName: string;
-  patientId: string;
-  appointmentId: string;
-  onSave: (imageUrl: string) => Promise<void>;
+  letterheadUrl: string
+  patientName: string
+  patientId: string
+  appointmentId: string
+  onSave: (canvasBlob: Blob) => Promise<void>
+  saving: boolean
 }
 
-type DrawingTool = "pen" | "eraser" | "move";
-type PenStyle = "round" | "square" | "butt";
-
-interface DrawAction {
-  tool: "pen" | "eraser";
-  points: { x: number; y: number }[];
-  color: string;
-  lineWidth: number;
-  penStyle: PenStyle;
-}
-
-// Mock function to simulate Firebase storage
-const mockUploadAndGetUrl = async (blob: Blob, path: string): Promise<string> => {
-  return URL.createObjectURL(blob);
-};
-
-const toPlainSrc = (srcLike?: SrcLike): string =>
-  !srcLike
-    ? fallbackLetterhead
-    : typeof srcLike === "string"
-      ? srcLike
-      : srcLike.src;
+type DrawingTool = "pen" | "eraser" | "pan"
 
 const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
-  letterheadUrl,
-  patientName,
-  patientId,
-  appointmentId,
-  onSave,
+  letterheadUrl,
+  patientName,
+  patientId,
+  appointmentId,
+  onSave,
+  saving,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const bgRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const contextRef = useRef<CanvasRenderingContext2D | null>(null)
+  const [isDrawing, setIsDrawing] = useState(false) // Used for drawing and panning gestures
+  const [color, setColor] = useState("#000000")
+  const [lineWidth, setLineWidth] = useState(2)
+  const [tool, setTool] = useState<DrawingTool>("pen")
+  const [letterheadLoaded, setLetterheadLoaded] = useState(false)
 
-  const drawCtx = useRef<CanvasRenderingContext2D | null>(null);
-  const bgCtx = useRef<CanvasRenderingContext2D | null>(null);
+  // --- Pan/Zoom State ---
+  const [scale, setScale] = useState(1)
+  // panOffset now stores the visual pixel translation applied by CSS transform
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
+  // Store last *viewport* position for pan calculation (mouse or single touch)
+  const lastPanPositionRef = useRef({ x: 0, y: 0 });
+  // Store initial pinch distance for touch zoom
+  const initialPinchDistanceRef = useRef<number | null>(null);
+  // Store the *logical* coordinate under the pinch midpoint at the start of touch zoom
+  const initialPinchLogicalMidpointRef = useRef<{ x: number; y: number } | null>(null);
 
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [color, setColor] = useState("#000000");
-  const [lineWidth, setLineWidth] = useState(2);
-  const [tool, setTool] = useState<DrawingTool>("pen");
-  const [penStyle, setPenStyle] = useState<PenStyle>("round");
-  const [saving, setSaving] = useState(false);
-  const [bgReady, setBgReady] = useState(false);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [actions, setActions] = useState<DrawAction[]>([]);
-  const [current, setCurrent] = useState<DrawAction | null>(null);
-  const [redos, setRedos] = useState<DrawAction[]>([]);
-  const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
-  const [touchDist, setTouchDist] = useState<number | null>(null);
-  const [isTwoFingerPan, setIsTwoFingerPan] = useState(false);
 
-  const palette = ["#000", "#F00", "#00F", "#080", "#808", "#FA0"];
-  const capStyles = [
-    { value: "round", label: "Round" },
-    { value: "square", label: "Square" },
-    { value: "butt", label: "Flat" },
-  ];
+  // Available colors for quick selection
+  const colors = [
+    "#000000", "#FF0000", "#0000FF", "#008000", "#800080", "#FFA500",
+  ]
 
-  const drawLetterhead = useCallback(() => {
-    const canvas = bgRef.current;
-    const ctx = bgCtx.current;
-    if (!canvas || !ctx) return;
+  // Memoize the drawing function
+  const drawOnCanvas = useCallback(
+    (logicalX: number, logicalY: number, isMoving: boolean) => {
+      const context = contextRef.current
+      if (!context) return
 
-    const src = toPlainSrc(letterheadUrl);
+      if (!isMoving) {
+        context.beginPath()
+        context.moveTo(logicalX, logicalY)
+      } else {
+        context.lineTo(logicalX, logicalY)
+        context.stroke()
+      }
+    },
+    [], // Dependencies removed as contextRef is stable after initial useEffect
+  )
 
-    const paint = (url: string) => {
-      const img = new Image();
-      img.src = url;
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        // Reset transform & clear
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Function to get logical coordinates from screen/client coordinates
+  const getLogicalCoords = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current
+      if (!canvas) return null
 
-        // Calculate fit dims at zoom=1
-        const imgAspect = img.width / img.height;
-        const canvasAspect = canvas.width / canvas.height;
-        let dw, dh, ox = 0, oy = 0;
-        if (imgAspect > canvasAspect) {
-          dw = canvas.width;
-          dh = canvas.width / imgAspect;
-          oy = (canvas.height - dh) / 2;
-        } else {
-          dh = canvas.height;
-          dw = canvas.height * imgAspect;
-          ox = (canvas.width - dw) / 2;
-        }
+      const rect = canvas.getBoundingClientRect()
+      // Calculate coordinates relative to the canvas's visual top-left corner
+      const canvasVisualX = clientX - rect.left;
+      const canvasVisualY = clientY - rect.top;
 
-        // Apply unified zoom/pan transform
-        ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
-        // Draw at the base fit dims
-        ctx.drawImage(img, ox, oy, dw, dh);
+      // Reverse the CSS scaling from the visual position relative to the transformed canvas origin
+      // The panOffset is handled by rect.left/top, which reflect the transformed position
+      const logicalX = canvasVisualX / scale;
+      const logicalY = canvasVisualY / scale;
 
-        setBgReady(true);
-      };
+      return { x: logicalX, y: logicalY }
+    },
+    [canvasRef, scale], // Only scale is needed as a dependency here
+  )
 
-      img.onerror = () => {
-        fetch(url)
-          .then((r) => r.blob())
-          .then((b) => {
-            paint(URL.createObjectURL(b));
-          })
-          .catch((err) => {
-            console.error("letterhead load error:", err);
-            ctx.fillStyle = "#fff";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            setBgReady(true);
-          });
-      };
-    };
+  // Initialize canvas and load letterhead
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
 
-    paint(src);
-  }, [letterheadUrl, zoom, pan]);
+    const ctx = canvas.getContext("2d")
+    if (!ctx) {
+      toast.error("Could not get canvas context.")
+      return
+    }
 
-  const redrawStrokes = useCallback(() => {
-    const ctx = drawCtx.current;
+    // Set canvas dimensions (fixed logical size, CSS handles display size)
+    canvas.width = 800
+    canvas.height = 1100 // A4 proportions approximately
+
+    // Set initial context properties
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    contextRef.current = ctx // Store context in ref
+
+    const loadLetterhead = () => {
+      const letterhead = new Image()
+      letterhead.crossOrigin = "anonymous"
+      letterhead.src = letterheadUrl
+      letterhead.onload = () => {
+        if (contextRef.current) {
+          contextRef.current.clearRect(0, 0, canvas.width, canvas.height); // Clear before drawing
+          contextRef.current.drawImage(letterhead, 0, 0, canvas.width, canvas.height)
+
+          // Add patient name and date at the top
+          contextRef.current.font = "18px Arial"
+          contextRef.current.fillStyle = "#000000"
+          contextRef.current.fillText(`Patient: ${patientName}`, 50, 150)
+          contextRef.current.fillText(`Date: ${new Date().toLocaleDateString()}`, 50, 180)
+
+          setLetterheadLoaded(true)
+        }
+      }
+      letterhead.onerror = (e) => {
+        console.error("Error loading letterhead:", e)
+        toast.error("Failed to load letterhead. Using fallback background.")
+        // Create a basic white background with a border as fallback
+        if (contextRef.current && canvas) {
+          contextRef.current.fillStyle = "#ffffff"
+          contextRef.current.fillRect(0, 0, canvas.width, canvas.height)
+          contextRef.current.strokeStyle = "#000000"
+          contextRef.current.lineWidth = 2
+          contextRef.current.strokeRect(5, 5, canvas.width - 10, canvas.height - 10)
+
+          // Add patient name and date at the top
+          contextRef.current.font = "18px Arial"
+          contextRef.current.fillStyle = "#000000"
+          contextRef.current.fillText(`Patient: ${patientName}`, 50, 150)
+          contextRef.current.fillText(`Date: ${new Date().toLocaleDateString()}`, 50, 180)
+        }
+        setLetterheadLoaded(true)
+      }
+    }
+
+    loadLetterhead();
+
+    // Clean up context on unmount
+    return () => {
+      contextRef.current = null;
+    };
+  }, [letterheadUrl, patientName])
+
+  // Update context properties when tool, color, or line width changes
+  useEffect(() => {
+    if (!contextRef.current) return
+    contextRef.current.strokeStyle = tool === "eraser" ? "#ffffff" : color
+    // Line width is applied directly to context, independent of scale for logical drawing
+    // Eraser is wider in logical pixels
+    contextRef.current.lineWidth = tool === "eraser" ? lineWidth * 4 : lineWidth;
+    contextRef.current.globalCompositeOperation = tool === "eraser" ? "destination-out" : "source-over";
+  }, [color, lineWidth, tool])
+
+  // --- Mouse Handlers ---
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!contextRef.current || !letterheadLoaded) return
+
+    setIsDrawing(true)
+
+    if (tool === "pen" || tool === "eraser") {
+      const coords = getLogicalCoords(e.clientX, e.clientY);
+      if (!coords) return;
+      drawOnCanvas(coords.x, coords.y, false)
+    } else if (tool === "pan") {
+      // Start pan by storing the current mouse position
+      lastPanPositionRef.current = { x: e.clientX, y: e.clientY };
+    }
+  }
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!isDrawing || !contextRef.current || !letterheadLoaded) return
+
+    if (tool === "pen" || tool === "eraser") {
+      const coords = getLogicalCoords(e.clientX, e.clientY);
+      if (!coords) return;
+      drawOnCanvas(coords.x, coords.y, true)
+    } else if (tool === "pan") {
+      // Pan by calculating delta from last position and updating visual panOffset state
+      const deltaX = e.clientX - lastPanPositionRef.current.x;
+      const deltaY = e.clientY - lastPanPositionRef.current.y;
+
+      setPanOffset(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
+      lastPanPositionRef.current = { x: e.clientX, y: e.clientY }; // Update last position for next move
+    }
+  }
+
+  const stopDrawing = () => {
+    setIsDrawing(false)
+    if (contextRef.current && (tool === "pen" || tool === "eraser")) {
+      contextRef.current.closePath()
+    }
+    // Reset pan tracking position
+    lastPanPositionRef.current = { x: 0, y: 0 };
+    // Reset pinch tracking refs
+    initialPinchDistanceRef.current = null;
+    initialPinchLogicalMidpointRef.current = null;
+  }
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!canvasRef.current) return;
+
+    const zoomFactor = 1.1; // How much to zoom per step
+    const delta = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    // Cursor position relative to viewport
+    const cursorXViewport = e.clientX;
+    const cursorYViewport = e.clientY;
+
+    // Calculate logical coordinate under cursor *before* zoom
+    const logicalCursorCoords = getLogicalCoords(cursorXViewport, cursorYViewport);
+    if (!logicalCursorCoords) return;
+
+    const newScale = Math.max(0.5, Math.min(3, scale * delta)); // Limit zoom range
+
+    // Calculate new pan offset to keep the same logical point under the cursor
+    // Target Viewport Position = (Logical Pos * New Scale) + New Pan Offset
+    // We want Target Viewport Position to be the original cursor viewport position
+    // cursorXViewport = (logicalCursorCoords.x * newScale) + newPanX
+    // cursorYViewport = (logicalCursorCoords.y * newScale) + newPanY
+    // Note: The pan offset is relative to the canvas's original position (rect.left, rect.top)
+    // So the visual position relative to viewport is (logical * scale + panX + originalCanvasLeft, logical * scale + panY + originalCanvasTop)
+    // Instead, let's calculate the new pan offset required to keep the logical cursor point
+    // at the *same visual distance* from the *newly scaled* canvas's top-left.
+
+    // Visual position relative to *transformed* canvas top-left if only scaling happened
+    const newVisualXRelativeToScaledCanvas = logicalCursorCoords.x * newScale;
+    const newVisualYRelativeToScaledCanvas = logicalCursorCoords.y * newScale;
+
+    // The current cursor position relative to *transformed* canvas top-left is (cursorXViewport - rect.left)
+    // The difference is the required change in the visual pan offset
+    const newPanX = panOffset.x + (cursorXViewport - rect.left) - newVisualXRelativeToScaledCanvas;
+    const newPanY = panOffset.y + (cursorYViewport - rect.top) - newVisualYRelativeToScaledCanvas;
+
+    // A simpler way to calculate new pan for zoom-to-cursor:
+    // The point (logicalCursorCoords.x, logicalCursorCoords.y) was visually at (cursorXViewport, cursorYViewport)
+    // After scaling by `delta`, its visual position would become (logicalCursorCoords.x * scale * delta, logicalCursorCoords.y * scale * delta) relative to original canvas origin.
+    // Its new visual position relative to viewport needs to be (logicalCursorCoords.x * newScale + newPanX, logicalCursorCoords.y * newScale + newPanY).
+    // We want this to equal the cursor viewport position: (cursorXViewport, cursorYViewport)
+    // cursorXViewport = (logicalCursorCoords.x * newScale) + newPanX
+    // newPanX = cursorXViewport - (logicalCursorCoords.x * newScale)
+    // Similarly, newPanY = cursorYViewport - (logicalCursorCoords.y * newScale)
+    // These newPanX/Y values are the required *total* visual pan offsets relative to the viewport origin (0,0)
+    // But our panOffset state is relative to the canvas's original position.
+    // Let's calculate the pan offset needed to align the logical point with the cursor relative to the CANVAS origin (before CSS translate)
+
     const canvas = canvasRef.current;
-    if (!ctx || !canvas) return;
+    const rectAfterScaling = canvas.getBoundingClientRect(); // Get bounds *after* potential state update if setScale was async
 
-    // Reset transform & clear
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Calculate the coordinate relative to the original canvas top-left if *only* scaling was applied
+    const targetVisualX = logicalCursorCoords.x * newScale;
+    const targetVisualY = logicalCursorCoords.y * newScale;
 
-    // Apply same zoom/pan transform
-    ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+    // The difference between the desired visual point (cursor relative to original canvas origin)
+    // and where that point would be with just scaling is the required pan offset.
+    // Desired visual point relative to original canvas origin = (cursorXViewport - originalCanvasLeft, cursorYViewport - originalCanvasTop)
+    // Let's use the simpler calculation that worked in step 11 of thought process:
+    // NewPanX = cursorXViewport - (logicalCursorCoords.x * newScale);
+    // NewPanY = cursorYViewport - (logicalCursorCoords.y * newScale);
+    // This is the translation needed relative to viewport origin. Our state is the same.
 
-    actions.forEach((a) => {
-      if (a.points.length < 2) return;
-      ctx.beginPath();
-      ctx.strokeStyle = a.color;
-      ctx.lineWidth = a.lineWidth;
-      ctx.lineCap = a.penStyle;
-      ctx.moveTo(a.points[0].x, a.points[0].y);
-      a.points.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
-      ctx.stroke();
-    });
-  }, [actions, zoom, pan]);
+    const finalNewPanX = cursorXViewport - (logicalCursorCoords.x * newScale);
+    const finalNewPanY = cursorYViewport - (logicalCursorCoords.y * newScale);
 
-  useEffect(() => {
-    const c = canvasRef.current;
-    const bg = bgRef.current;
-    const wrap = containerRef.current;
-    if (!(c && bg && wrap)) return;
-    drawCtx.current = c.getContext("2d");
-    bgCtx.current = bg.getContext("2d");
 
-    const resize = () => {
-      const w = wrap.clientWidth || window.innerWidth;
-      const h = (wrap.clientHeight || window.innerHeight) - 100;
-      c.width = bg.width = w;
-      c.height = bg.height = h;
-      drawLetterhead();
-      redrawStrokes();
-    };
-    resize();
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, [drawLetterhead, redrawStrokes]);
+    setScale(newScale);
+    // Update panOffset based on the cursor point
+    setPanOffset({ x: finalNewPanX, y: finalNewPanY });
+   }
 
-  useEffect(() => {
-    const ctx = drawCtx.current;
-    if (!ctx) return;
-    ctx.strokeStyle = tool === "eraser" ? "#fff" : color;
-    ctx.lineWidth = tool === "eraser" ? lineWidth * 2 : lineWidth;
-    ctx.lineCap = penStyle;
-  }, [tool, color, lineWidth, penStyle]);
+  // --- Touch Handlers ---
+  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!contextRef.current || !letterheadLoaded) return
 
-  useEffect(() => {
-    if (bgCtx.current) drawLetterhead();
-  }, [drawLetterhead]);
+    const touches = e.touches;
 
-  useEffect(() => redrawStrokes(), [redrawStrokes]);
+    if (touches.length === 1) {
+      setIsDrawing(true);
+      // Store current touch position for single-finger pan or drawing
+      lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY };
 
-  // Convert screen coordinates to canvas coordinates
-  const toCanvas = (sx: number, sy: number) => ({
-    x: (sx - pan.x) / zoom,
-    y: (sy - pan.y) / zoom,
-  });
-  
-  // Distance between two touch points
-  const distance = (t: React.TouchList) => 
-    Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      if (tool === "pen" || tool === "eraser") {
+        const coords = getLogicalCoords(touches[0].clientX, touches[0].clientY);
+        if (!coords) return;
+        drawOnCanvas(coords.x, coords.y, false);
+      }
+    } else if (touches.length === 2) {
+      // Two fingers for zoom/pan gesture
+      setIsDrawing(false); // Not drawing with two fingers
+      const dist = Math.sqrt(
+        Math.pow(touches[1].clientX - touches[0].clientX, 2) +
+        Math.pow(touches[1].clientY - touches[0].clientY, 2)
+      );
+      initialPinchDistanceRef.current = dist;
 
-  // Start drawing or moving
-  const startDraw = (sx: number, sy: number, source: "mouse" | "touch") => {
-    if (tool === "move") {
-      setLastMouse({ x: sx, y: sy });
-      return;
+      const midX = (touches[0].clientX + touches[1].clientX) / 2;
+      const midY = (touches[0].clientY + touches[1].clientY) / 2;
+
+      // Store the logical coordinate under the initial pinch midpoint
+      initialPinchLogicalMidpointRef.current = getLogicalCoords(midX, midY);
+
+      // Store the initial visual midpoint position for calculating pan offset
+      lastPanPositionRef.current = { x: midX, y: midY }; // Reusing ref name, maybe rename to lastGesturePositionRef
+    }
+  }
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!letterheadLoaded) return
+
+    const touches = e.touches;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (touches.length === 1 && (tool === "pen" || tool === "eraser") && isDrawing) {
+      // Drawing with one finger (only if started as a draw gesture and isDrawing is true)
+      const coords = getLogicalCoords(touches[0].clientX, touches[0].clientY);
+      if (!coords) return;
+      drawOnCanvas(coords.x, coords.y, true);
+      // lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY }; // No need to update pan pos while drawing
+    } else if (touches.length === 1 && tool === "pan" && isDrawing) {
+      // Pan with one finger (only if started as a pan gesture and isDrawing is true)
+      const deltaX = touches[0].clientX - lastPanPositionRef.current.x;
+      const deltaY = touches[0].clientY - lastPanPositionRef.current.y;
+
+      setPanOffset(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
+      lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY }; // Update last pos for next pan move
+    }
+    else if (touches.length === 2) {
+      // Zooming with two fingers
+      if (initialPinchDistanceRef.current === null || !initialPinchLogicalMidpointRef.current) return;
+
+      const currentDist = Math.sqrt(
+        Math.pow(touches[1].clientX - touches[0].clientX, 2) +
+        Math.pow(touches[1].clientY - touches[0].clientY, 2)
+      );
+
+      const scaleChange = currentDist / initialPinchDistanceRef.current;
+      const newScale = Math.max(0.5, Math.min(3, scale * scaleChange)); // Limit zoom range
+
+      const currentMidXViewport = (touches[0].clientX + touches[1].clientX) / 2;
+      const currentMidYViewport = (touches[0].clientY + touches[1].clientY) / 2;
+
+      const logicalMidX = initialPinchLogicalMidpointRef.current.x;
+      const logicalMidY = initialPinchLogicalMidpointRef.current.y;
+
+      // Calculate the new visual pan offset needed to keep the logical midpoint under the current visual midpoint
+      // currentMidXViewport = (logicalMidX * newScale) + newPanX
+      const newPanX = currentMidXViewport - (logicalMidX * newScale);
+      const newPanY = currentMidYViewport - (logicalMidY * newScale);
+
+      setScale(newScale);
+      setPanOffset({ x: newPanX, y: newPanY });
+
+      // Update initial pinch distance for smoother subsequent movements
+      initialPinchDistanceRef.current = currentDist;
+
+      // No need to update lastPanPositionRef or initialPinchLogicalMidpointRef here for 2-finger gesture
+      // Subsequent moves are relative to the *original* pinch start configuration.
+    } else if (touches.length === 1 && (tool === "pen" || tool === "eraser") && !isDrawing) {
+        // If started with 2 fingers (zoom/pan) and one is lifted, but tool is pen/eraser,
+        // we don't want to start drawing accidentally. Do nothing or handle transition.
+        // Current logic relies on `isDrawing` state preventing this.
     }
-    
-    if (!drawCtx.current || !bgReady) return;
-    
-    setIsDrawing(true);
-    const { x, y } = toCanvas(sx, sy);
-    
-    const a: DrawAction = {
-      tool,
-      points: [{ x, y }],
-      color: tool === "eraser" ? "#fff" : color,
-      lineWidth: tool === "eraser" ? lineWidth * 2 : lineWidth,
-      penStyle,
-    };
-    
-    setCurrent(a);
-    setRedos([]);
-    
-    // Fixed: Apply transformation for drawing
-    const ctx = drawCtx.current;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-  };
+  }
 
-  // Continue drawing or moving
-  const moveDraw = (sx: number, sy: number) => {
-    if (tool === "move" && isDrawing === false) {
-      const dx = sx - lastMouse.x;
-      const dy = sy - lastMouse.y;
-      setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
-      setLastMouse({ x: sx, y: sy });
-      return;
-    }
-    
-    if (!isDrawing || !drawCtx.current || !current) return;
-    
-    const { x, y } = toCanvas(sx, sy);
-    setCurrent((prev) => (prev ? { ...prev, points: [...prev.points, { x, y }] } : prev));
-    
-    // Fixed: Apply proper coordinates for drawing
-    drawCtx.current.lineTo(x, y);
-    drawCtx.current.stroke();
-  };
+  const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    // If any touches remain after the gesture, don't completely stop
+    if (e.touches.length === 0) {
+      stopDrawing(); // Call stopDrawing logic (resets isDrawing, closes path, resets refs)
+    } else {
+      // If one finger is lifted during a two-finger gesture, we might transition
+      // back to a single-finger pan IF the tool is 'pan'.
+      // Reset isDrawing state based on remaining touches and current tool.
+      const remainingTouches = e.touches.length;
+      const shouldContinuePan = remainingTouches === 1 && tool === 'pan';
+      setIsDrawing(shouldContinuePan);
 
-  // End drawing
-  const endDraw = () => {
-    if (!isDrawing || !current) return;
-    setIsDrawing(false);
-    drawCtx.current?.closePath();
-    if (current.points.length > 1) setActions((a) => [...a, current]);
-    setCurrent(null);
-    setIsTwoFingerPan(false);
-  };
-
-  /* Mouse events */
-  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    startDraw(x, y, "mouse");
-  };
-
-  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    moveDraw(x, y);
-  };
-
-  /* Touch events - improved for better mobile support */
-  const onTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault(); // Prevent scroll/zoom behaviors
-
-    if (e.touches.length === 2) {
-      // Two finger touch - setup for zoom or pan
-      setTouchDist(distance(e.touches));
-      setIsTwoFingerPan(true);
-      
-      // Store the midpoint of the two fingers for panning
-      const rect = e.currentTarget.getBoundingClientRect();
-      const x = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-      const y = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-      setLastMouse({ x, y });
-      return;
-    }
-    
-    // Single finger - draw or move
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.touches[0].clientX - rect.left;
-    const y = e.touches[0].clientY - rect.top;
-    startDraw(x, y, "touch");
-  };
-
-  const onTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault(); // Prevent scroll/zoom behaviors
-
-    if (e.touches.length === 2) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      // Get midpoint for panning
-      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-      
-      // Calculate new distance for zooming
-      const nd = distance(e.touches);
-      
-      if (touchDist !== null) {
-        // Handle zooming
-        if (Math.abs(nd - touchDist) > 5) {
-          const oldZoom = zoom;
-          const newZoom = Math.min(Math.max(zoom * (nd > touchDist ? 1.02 : 0.98), 0.5), 3);
-          
-          // Adjust pan to keep the center point fixed during zoom
-          if (oldZoom !== newZoom) {
-            const zoomRatio = newZoom / oldZoom;
-            // Adjust pan to maintain center point
-            const dx = mx - lastMouse.x;
-            const dy = my - lastMouse.y;
-            
-            setPan(p => ({
-              x: p.x + dx,
-              y: p.y + dy
-            }));
-            
-            setZoom(newZoom);
-          }
+      // Update the last event position for the remaining touch for potential panning
+      if (remainingTouches === 1) {
+         lastPanPositionRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      } else {
+            lastPanPositionRef.current = { x: 0, y: 0 }; // Reset if more than one touch remains (shouldn't happen in normal end)
         }
-        
-        // Update pan based on midpoint movement
-        if (isTwoFingerPan) {
-          const dx = mx - lastMouse.x;
-          const dy = my - lastMouse.y;
-          if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-            setPan(p => ({ x: p.x + dx, y: p.y + dy }));
-          }
-        }
-      }
-      
-      setTouchDist(nd);
-      setLastMouse({ x: mx, y: my });
-      return;
+
+       // Reset pinch-specific refs as the pinch gesture has ended
+       initialPinchDistanceRef.current = null;
+       initialPinchLogicalMidpointRef.current = null;
+    }
+  }
+
+
+  const clearCanvas = () => {
+    if (!contextRef.current || !canvasRef.current) return
+
+    // Confirm before clearing
+    if (window.confirm("Are you sure you want to clear the prescription?")) {
+      const canvas = canvasRef.current;
+      // Clear the drawing area on the logical canvas
+      contextRef.current.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Redraw the base content (letterhead, patient info)
+      const letterhead = new Image()
+      letterhead.crossOrigin = "anonymous"
+      letterhead.src = letterheadUrl
+      letterhead.onload = () => {
+        if (contextRef.current) {
+          contextRef.current.drawImage(letterhead, 0, 0, canvas.width, canvas.height)
+
+          // Re-add patient name and date
+          contextRef.current.font = "18px Arial"
+          contextRef.current.fillStyle = "#000000"
+          contextRef.current.fillText(`Patient: ${patientName}`, 50, 150)
+          contextRef.current.fillText(`Date: ${new Date().toLocaleDateString()}`, 50, 180)
+        }
+      }
+      letterhead.onerror = (e) => {
+        console.error("Error reloading letterhead:", e);
+        toast.error("Failed to reload letterhead background.");
+        // Fallback to just drawing patient info on white background
+        if (contextRef.current && canvas) {
+          contextRef.current.fillStyle = "#ffffff";
+          contextRef.current.fillRect(0, 0, canvas.width, canvas.height);
+          contextRef.current.font = "18px Arial"
+          contextRef.current.fillStyle = "#000000"
+          contextRef.current.fillText(`Patient: ${patientName}`, 50, 150)
+          contextRef.current.fillText(`Date: ${new Date().toLocaleDateString()}`, 50, 180)
+        }
+      }
+      // Reset pan and zoom to default after clearing
+      setScale(1);
+      setPanOffset({ x: 0, y: 0 });
+    }
+  }
+
+  // This handleSave function now just prepares the blob and calls the parent's onSave
+  const handleSaveClick = () => {
+    if (!canvasRef.current) {
+      toast.error("Canvas not ready.");
+      return;
+    }
+
+    // Temporarily reset transform for accurate blob export
+    const originalTransform = canvasRef.current.style.transform;
+    const originalPan = { ...panOffset };
+    const originalScale = scale;
+
+    // Apply default transform visually *before* creating blob
+    // Note: Directly manipulating DOM like this can sometimes be tricky with React state updates.
+    // A more robust solution might involve drawing to an offscreen canvas for the blob.
+    // For this fix, let's try temporarily resetting the visual transform.
+    // Consider drawing to a hidden canvas at 1x scale for the final image.
+    // For simplicity, we'll try resetting the style first.
+    // If this causes visual flicker or issues, an offscreen canvas is better.
+
+    // Let's try the offscreen canvas approach as it's safer
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvasRef.current.width; // Logical width
+    exportCanvas.height = canvasRef.current.height; // Logical height
+    const exportCtx = exportCanvas.getContext('2d');
+
+    if (!exportCtx || !contextRef.current) {
+        toast.error("Could not create export canvas.");
+        return;
     }
-    
-    // Handle single finger drawing
-    if (!isTwoFingerPan) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const x = e.touches[0].clientX - rect.left;
-      const y = e.touches[0].clientY - rect.top;
-      moveDraw(x, y);
-    }
-  };
 
-  /* Undo/Redo/Clear functions */
-  const undo = () => {
-    if (!actions.length) return;
-    setRedos((r) => [...r, actions[actions.length - 1]]);
-    setActions((a) => a.slice(0, -1));
-  };
-  
-  const redo = () => {
-    if (!redos.length) return;
-    setActions((a) => [...a, redos[redos.length - 1]]);
-    setRedos((r) => r.slice(0, -1));
-  };
-  
-  const clearCanvas = () => {
-    if (!drawCtx.current || !canvasRef.current) return;
-    if (!window.confirm("Clear the prescription?")) return;
-    drawCtx.current.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-    setActions([]);
-    setRedos([]);
-  };
+    // Copy the current drawing context content to the export canvas
+    // We need to draw the original content (letterhead etc.) and then the drawing strokes.
+    // This is tricky because we don't store strokes separately.
+    // The simplest way using the current structure is to draw the visible canvas content.
+    // However, canvas.toBlob captures the *logical* canvas content, not the visually transformed one.
+    // The drawing strokes are already on the logical canvas. The letterhead is also drawn there.
+    // So canvasRef.current.toBlob should capture the correct *content*, regardless of CSS transform.
+    // The only risk is if the initial drawing of letterhead or patient info happened
+    // *before* the canvas size was fully set or context was ready, but that's handled in useEffect.
 
-  /* Save functionality */
-  const save = async () => {
-    if (!(canvasRef.current && bgRef.current)) return;
-    try {
-      setSaving(true);
-      const tmp = document.createElement("canvas");
-      tmp.width = canvasRef.current.width;
-      tmp.height = canvasRef.current.height;
-      const tctx = tmp.getContext("2d")!;
-      tctx.drawImage(bgRef.current, 0, 0);
-      tctx.drawImage(canvasRef.current, 0, 0);
-      
-      const blob: Blob = await new Promise((res, rej) =>
-        tmp.toBlob((b) => (b ? res(b) : rej("blob fail")), "image/png")
-      );
-      
-      // In a real app with Firebase, you'd use uploadBytes and getDownloadURL
-      // Here we're using a mock function
-      const url = await mockUploadAndGetUrl(blob, `prescriptions/${patientId}_${appointmentId}_${Date.now()}.png`);
-      await onSave(url);
-    } finally {
-      setSaving(false);
-    }
-  };
+    // Let's revert to the simpler logic: canvas.toBlob should work directly on the logical canvas state.
+    // The visual transform is only a CSS presentation layer.
 
-  return (
-    <div className="flex flex-col h-full min-h-screen" ref={containerRef}>
-      {/* Toolbar */}
-      <div className="flex flex-wrap gap-2 p-4 bg-white border-b justify-center">
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant={tool === "pen" ? "default" : "outline"} onClick={() => setTool("pen")}>
-            <Pencil className="h-4 w-4 mr-1" /> Pen
-          </Button>
-          <Button size="sm" variant={tool === "eraser" ? "default" : "outline"} onClick={() => setTool("eraser")}>
-            <Eraser className="h-4 w-4 mr-1" /> Eraser
-          </Button>
-          <Button size="sm" variant={tool === "move" ? "default" : "outline"} onClick={() => setTool("move")}>
-            <MoveHorizontal className="h-4 w-4 mr-1" /> Move
-          </Button>
+    canvasRef.current.toBlob((blob) => {
+      if (blob) {
+        onSave(blob).catch(err => {
+          console.error("Save failed in parent:", err);
+          toast.error("Failed to save prescription.");
+        });
+      } else {
+        toast.error("Failed to convert canvas to image.");
+      }
+    }, "image/png");
+  }
 
-          {/* Cap style */}
-          <Select value={penStyle} onValueChange={(v) => setPenStyle(v as PenStyle)}>
-            <SelectTrigger className="w-[120px] h-9">
-              <PenTool className="h-4 w-4 mr-1" />
-              <SelectValue>{penStyle}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {capStyles.map((s) => (
-                <SelectItem key={s.value} value={s.value}>
-                  {s.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    // Determine cursor style based on tool and drawing state
+    const getCursorStyle = () => {
+        if (!letterheadLoaded) return 'wait';
+        if (tool === 'pan') {
+            return isDrawing ? 'grabbing' : 'grab';
+        }
+        return 'crosshair'; // Default for pen and eraser
+    };
 
-        <div className="flex items-center gap-2">
-          <span className="text-sm">Width:</span>
-          <Slider className="w-24" value={[lineWidth]} min={1} max={10} onValueChange={(v) => setLineWidth(v[0])} />
-        </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-sm">Color:</span>
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-8 h-8 border-0 cursor-pointer"
-          />
-          <div className="flex gap-1">
-            {palette.map((c) => (
-              <div
-                key={c}
-                className="w-6 h-6 rounded-full border cursor-pointer"
-                style={{ backgroundColor: c }}
-                onClick={() => setColor(c)}
-              />
-            ))}
-          </div>
-        </div>
+  return (
+    <div className="flex flex-col items-center p-4 w-full h-full overflow-hidden relative">
+      {/* Control Bar */}
+      <div className="flex flex-wrap gap-2 mb-4 w-full justify-center bg-white shadow-md dark:bg-gray-800 p-3 rounded-md z-10 sticky top-0 left-0 right-0">
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={tool === "pen" ? "default" : "outline"} onClick={() => setTool("pen")}>
+            <Pencil className="h-4 w-4 mr-1" />
+            Pen
+          </Button>
+          <Button size="sm" variant={tool === "eraser" ? "default" : "outline"} onClick={() => setTool("eraser")}>
+            <Eraser className="h-4 w-4 mr-1" />
+            Eraser
+          </Button>
+          <Button size="sm" variant={tool === "pan" ? "default" : "outline"} onClick={() => setTool("pan")}>
+            <Move className="h-4 w-4 mr-1" />
+            Pan
+          </Button>
+        </div>
 
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={undo} disabled={!actions.length}>
-            <Undo className="h-4 w-4 mr-1" /> Undo
-          </Button>
-          <Button size="sm" variant="outline" onClick={redo} disabled={!redos.length}>
-            <RotateCcw className="h-4 w-4 mr-1" /> Redo
-          </Button>
-          <Button size="sm" variant="destructive" onClick={clearCanvas}>
-            <Trash2 className="h-4 w-4 mr-1" /> Clear
-          </Button>
-        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm">Width:</span>
+          <Slider
+            className="w-24"
+            value={[lineWidth]}
+            min={1}
+            max={tool === "eraser" ? 5 : 10} // Eraser max width can be different in logical pixels
+            step={1}
+            onValueChange={(value) => setLineWidth(value[0])}
+            disabled={tool === "pan"} // Disable width slider in pan mode
+          />
+        </div>
 
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setZoom((z) => Math.min(z + 0.1, 3))}>
-            <ZoomIn className="h-4 w-4" />
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setZoom((z) => Math.max(z - 0.1, 0.5))}>
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setZoom(1)}>
-            {Math.round(zoom * 100)}%
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setPan({ x: 0, y: 0 })}>
-            <MoveHorizontal className="h-4 w-4" /> Reset
-          </Button>
-        </div>
-      </div>
+        {(tool === "pen" || tool === "eraser") && ( // Only show color for drawing/erasing tools
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Color:</span>
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="w-8 h-8 border-0 p-0 cursor-pointer"
+              disabled={tool === "eraser"} // Disable color picker for eraser
+            />
+            <div className="flex gap-1">
+              {colors.map((c) => (
+                <div
+                  key={c}
+                  className="w-6 h-6 rounded-full cursor-pointer border border-gray-300"
+                  style={{ backgroundColor: c }}
+                  onClick={() => { setTool("pen"); setColor(c); }} // Select pen tool when choosing color
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
-      {/* Canvases */}
-      <div className="flex-1 relative bg-gray-50 overflow-auto">
-        <div className="absolute inset-0">
-          <canvas ref={bgRef} className="absolute inset-0 bg-white" style={{ width: "100%", height: "100%" }} />
-          <canvas
-            ref={canvasRef}
-            className="absolute inset-0 z-10 touch-none"
-            style={{
-              width: "100%",
-              height: "100%",
-              background: "transparent",
-              cursor: tool === "move" ? "move" : tool === "pen" ? "crosshair" : "default",
-            }}
-            onMouseDown={onMouseDown}
-            onMouseMove={onMouseMove}
-            onMouseUp={endDraw}
-            onMouseLeave={endDraw}
-            onTouchStart={onTouchStart}
-            onTouchMove={onTouchMove}
-            onTouchEnd={endDraw}
-          />
-        </div>
-      </div>
+        <Button size="sm" variant="destructive" onClick={clearCanvas} disabled={!letterheadLoaded}>
+          <Trash2 className="h-4 w-4 mr-1" />
+          Clear
+        </Button>
 
-      {/* Save bar */}
-      <div className="p-4 bg-white border-t flex justify-end">
-        <Button onClick={save} disabled={saving || !bgReady} className="bg-emerald-600 hover:bg-emerald-700">
-          <Save className="h-4 w-4 mr-1" />
-          {saving ? "Saving…" : "Save Prescription"}
-        </Button>
-      </div>
-    </div>
-  );
-};
+        {/* Save button provided by the parent page component */}
+      </div>
 
-// Button component
-interface ButtonProps {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  className?: string;
-  size?: "sm" | "md" | "lg";
-  variant?: "default" | "outline" | "destructive";
+      {/* Canvas Container - handles visual pan/zoom and scroll overflow */}
+      <div className="relative w-full h-full overflow-auto flex justify-center items-start"
+          onWheel={handleWheel} // Mouse wheel zoom
+          style={{ cursor: getCursorStyle() }} // Apply cursor style to container
+      >
+          {/* Canvas element - drawing context operates at fixed logical size */}
+        <canvas
+          ref={canvasRef}
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
+          onMouseUp={stopDrawing}
+          onMouseLeave={stopDrawing} // Important to stop drawing if mouse leaves canvas
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchEnd} // Handle touch cancel events
+          className="bg-white shadow-lg"
+          // Apply CSS transform for visible pan and zoom
+          style={{
+            transformOrigin: '0 0', // Scale and translate from the top-left corner
+            transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`,
+             // Explicitly set width/height for logical size
+            width: '800px',
+            height: '1100px',
+             // Cursor is handled by the parent container div
+             cursor: 'inherit',
+          }}
+        />
+      </div>
+    </div>
+  )
 }
-
-const Button: React.FC<ButtonProps> = ({ 
-  children, 
-  onClick, 
-  disabled = false, 
-  className = "", 
-  size = "md", 
-  variant = "default" 
-}) => {
-  const baseStyles = "inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2";
-  
-  const sizeStyles = {
-    sm: "h-9 px-3 text-xs",
-    md: "h-10 py-2 px-4",
-    lg: "h-11 px-8"
-  };
-  
-  const variantStyles = {
-    default: "bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700",
-    outline: "border border-gray-300 bg-transparent hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-800",
-    destructive: "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-  };
-  
-  const styles = `${baseStyles} ${sizeStyles[size]} ${variantStyles[variant]} ${className} ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`;
-  
-  return (
-    <button 
-      className={styles} 
-      onClick={onClick} 
-      disabled={disabled}
-    >
-      {children}
-    </button>
-  );
-};
-
-// Select and related components
-interface SelectProps {
-  children: React.ReactNode;
-  value: string;
-  onValueChange: (value: string) => void;
-}
-
-const Select: React.FC<SelectProps> = ({ children, value, onValueChange }) => {
-  const [open, setOpen] = useState(false);
-  
-  return (
-    <div className="relative">
-      {children}
-      {React.Children.map(children, child => {
-        if (React.isValidElement(child) && child.type === SelectTrigger) {
-          return React.cloneElement(child as React.ReactElement<any>, {
-            onClick: () => setOpen(!open),
-            open
-          });
-        }
-        if (React.isValidElement(child) && child.type === SelectContent) {
-          return open ? React.cloneElement(child as React.ReactElement<any>, {
-            onSelect: (val: string) => {
-              onValueChange(val);
-              setOpen(false);
-            },
-            value
-          }) : null;
-        }
-        return child;
-      })}
-    </div>
-  );
-};
-
-interface SelectTriggerProps {
-  children: React.ReactNode;
-  className?: string;
-  onClick?: () => void;
-  open?: boolean;
-}
-
-const SelectTrigger: React.FC<SelectTriggerProps> = ({ 
-  children, 
-  className = "", 
-  onClick,
-  open
-}) => {
-  return (
-    <button 
-      className={`flex items-center justify-between rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm hover:bg-gray-100 ${className} ${open ? 'border-blue-500' : ''}`}
-      onClick={onClick}
-    >
-      {children}
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`}>
-        <polyline points="6 9 12 15 18 9"></polyline>
-      </svg>
-    </button>
-  );
-};
-
-interface SelectContentProps {
-  children: React.ReactNode;
-  onSelect?: (value: string) => void;
-  value?: string;
-}
-
-const SelectContent: React.FC<SelectContentProps> = ({ 
-  children, 
-  onSelect,
-  value
-}) => {
-  return (
-    <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
-      {React.Children.map(children, child => {
-        if (React.isValidElement(child) && child.type === SelectItem) {
-          return React.cloneElement(child as React.ReactElement<any>, {
-            onClick: () => onSelect && onSelect(child.props.value),
-            selected: value === child.props.value
-          });
-        }
-        return child;
-      })}
-    </div>
-  );
-};
-
-interface SelectItemProps {
-  children: React.ReactNode;
-  value: string;
-  onClick?: () => void;
-  selected?: boolean;
-}
-
-const SelectItem: React.FC<SelectItemProps> = ({ 
-  children, 
-  onClick,
-  selected = false
-}) => {
-  return (
-    <div 
-      className={`relative cursor-pointer select-none py-2 pl-10 pr-4 ${selected ? 'bg-blue-100 text-blue-900' : 'text-gray-900 hover:bg-gray-100'}`}
-      onClick={onClick}
-    >
-      {selected && (
-        <span className="absolute left-0 flex h-full items-center pl-3">
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-            <polyline points="20 6 9 17 4 12"></polyline>
-          </svg>
-        </span>
-      )}
-      {children}
-    </div>
-  );
-};
-
-interface SelectValueProps {
-  children: React.ReactNode;
-  placeholder?: string;
-}
-
-const SelectValue: React.FC<SelectValueProps> = ({ 
-  children,
-  placeholder
-}) => {
-  return <span>{children || placeholder}</span>;
-};
-
-// Slider component
-interface SliderProps {
-  value: number[];
-  min: number;
-  max: number;
-  onValueChange: (value: number[]) => void;
-  className?: string;
-}
-
-const Slider: React.FC<SliderProps> = ({
-  value,
-  min,
-  max,
-  onValueChange,
-  className = ""
-}) => {
-  const percentage = ((value[0] - min) / (max - min)) * 100;
-  
-  return (
-    <div className={`relative flex w-full touch-none select-none items-center ${className}`}>
-      <div className="relative w-full h-2 rounded-full bg-gray-200">
-        <div
-          className="absolute h-full bg-blue-500 rounded-full"
-          style={{ width: `${percentage}%` }}
-        />
-        <input
-          type="range"
-          min={min}
-          max={max}
-          value={value[0]}
-          onChange={(e) => onValueChange([parseInt(e.target.value)])}
-          className="absolute w-full h-2 opacity-0 cursor-pointer"
-        />
-        <div
-          className="absolute w-4 h-4 bg-blue-500 rounded-full -translate-y-1/2 top-1/2"
-          style={{ left: `${percentage}%` }}
-        />
-      </div>
-    </div>
-  );
-};
 
 export default PrescriptionCanvas;
