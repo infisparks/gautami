@@ -14,9 +14,7 @@ import fallbackLetterhead from "@/public/letterhead.png"
 
 type SrcLike = string | { src: string } // next-image static import object
 
-/* ───────────────────────── Types ───────────────────────── */
 interface PrescriptionCanvasProps {
-  /** You can pass either string or StaticImageData. If undefined, we use the bundled fallback. */
   letterheadUrl?: SrcLike
   patientName: string
   patientId: string
@@ -35,7 +33,6 @@ interface DrawAction {
   penStyle: PenStyle
 }
 
-/* ───────────────────────── Helpers ───────────────────────── */
 const toPlainSrc = (srcLike?: SrcLike): string =>
   !srcLike
     ? (fallbackLetterhead as unknown as { src: string }).src
@@ -43,7 +40,6 @@ const toPlainSrc = (srcLike?: SrcLike): string =>
       ? srcLike
       : srcLike.src
 
-/* ───────────────────────── Component ───────────────────────── */
 const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   letterheadUrl,
   patientName,
@@ -51,7 +47,6 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   appointmentId,
   onSave,
 }) => {
-  /* ---------- refs ---------- */
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bgRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -59,7 +54,6 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   const drawCtx = useRef<CanvasRenderingContext2D | null>(null)
   const bgCtx = useRef<CanvasRenderingContext2D | null>(null)
 
-  /* ---------- state ---------- */
   const [isDrawing, setIsDrawing] = useState(false)
   const [color, setColor] = useState("#000000")
   const [lineWidth, setLineWidth] = useState(2)
@@ -75,7 +69,6 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 })
   const [touchDist, setTouchDist] = useState<number | null>(null)
 
-  /* ---------- constants ---------- */
   const palette = ["#000", "#F00", "#00F", "#080", "#808", "#FA0"]
   const capStyles = [
     { value: "round", label: "Round" },
@@ -83,9 +76,6 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     { value: "butt", label: "Flat" },
   ]
 
-  /* =================================================================================
-   *  draw letter-head  (coerces StaticImageData → string, and retries without CORS if needed)
-   * ================================================================================= */
   const drawLetterhead = useCallback(() => {
     const canvas = bgRef.current
     const ctx = bgCtx.current
@@ -98,16 +88,14 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       img.src = url
       img.crossOrigin = "anonymous"
       img.onload = () => {
-        // clear
+        // 🔧 UPDATED: reset transform & clear
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
         ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-        // fit
+        // calculate fit dims at zoom=1
         const imgAspect = img.width / img.height
         const canvasAspect = canvas.width / canvas.height
-        let dw,
-          dh,
-          ox = 0,
-          oy = 0
+        let dw, dh, ox = 0, oy = 0
         if (imgAspect > canvasAspect) {
           dw = canvas.width
           dh = canvas.width / imgAspect
@@ -118,19 +106,15 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
           ox = (canvas.width - dw) / 2
         }
 
-        const zW = dw * zoom
-        const zH = dh * zoom
-        const zX = ox - (zW - dw) / 2 + pan.x
-        const zY = oy - (zH - dh) / 2 + pan.y
-        ctx.drawImage(img, zX, zY, zW, zH)
-
-        // Removed patient name and date display
+        // 🔧 UPDATED: apply unified zoom/pan transform
+        ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y)
+        // draw at the base fit dims
+        ctx.drawImage(img, ox, oy, dw, dh)
 
         setBgReady(true)
       }
 
       img.onerror = () => {
-        // try again via fetch → dataURL to sidestep CORS blocks
         fetch(url)
           .then((r) => r.blob())
           .then((b) => {
@@ -148,33 +132,30 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     paint(src)
   }, [letterheadUrl, zoom, pan])
 
-  /* =================================================================================
-   *  redraw user strokes
-   * ================================================================================= */
   const redrawStrokes = useCallback(() => {
-    const ctx = drawCtx.current,
-      canvas = canvasRef.current
+    const ctx = drawCtx.current
+    const canvas = canvasRef.current
     if (!ctx || !canvas) return
+
+    // 🔧 UPDATED: reset transform & clear
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    // 🔧 UPDATED: apply same zoom/pan transform
+    ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y)
+
     actions.forEach((a) => {
       if (a.points.length < 2) return
       ctx.beginPath()
       ctx.strokeStyle = a.color
       ctx.lineWidth = a.lineWidth
       ctx.lineCap = a.penStyle
-      const pts = a.points.map((p) => ({
-        x: p.x * zoom + pan.x,
-        y: p.y * zoom + pan.y,
-      }))
-      ctx.moveTo(pts[0].x, pts[0].y)
-      pts.slice(1).forEach((p) => ctx.lineTo(p.x, p.y))
+      ctx.moveTo(a.points[0].x, a.points[0].y)
+      a.points.slice(1).forEach((p) => ctx.lineTo(p.x, p.y))
       ctx.stroke()
     })
   }, [actions, zoom, pan])
 
-  /* =================================================================================
-   *  init canvases
-   * ================================================================================= */
   useEffect(() => {
     const c = canvasRef.current
     const bg = bgRef.current
@@ -194,9 +175,8 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     resize()
     window.addEventListener("resize", resize)
     return () => window.removeEventListener("resize", resize)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [drawLetterhead, redrawStrokes])
 
-  /* keep brush params in sync */
   useEffect(() => {
     const ctx = drawCtx.current
     if (!ctx) return
@@ -205,15 +185,12 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     ctx.lineCap = penStyle
   }, [tool, color, lineWidth, penStyle])
 
-  /* re-draw on transform change */
   useEffect(() => {
     if (bgCtx.current) drawLetterhead()
   }, [drawLetterhead])
+
   useEffect(() => redrawStrokes(), [redrawStrokes])
 
-  /* =================================================================================
-   *  pointer helpers
-   * ================================================================================= */
   const toCanvas = (sx: number, sy: number) => ({
     x: (sx - pan.x) / zoom,
     y: (sy - pan.y) / zoom,
@@ -240,24 +217,46 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     }
     setCurrent(a)
     setRedos([])
+    const { x: cx, y: cy } = toCanvas(sx, sy)
     drawCtx.current.beginPath()
-    drawCtx.current.moveTo(sx, sy)
+    drawCtx.current.moveTo(cx, cy)
+    
   }
 
-  const moveDraw = (sx: number, sy: number) => {
-    if (tool === "move" && isDrawing === false) {
-      const dx = sx - lastMouse.x
-      const dy = sy - lastMouse.y
-      setPan((p) => ({ x: p.x + dx, y: p.y + dy }))
-      setLastMouse({ x: sx, y: sy })
-      return
+  // =================================================================================
+// moveDraw
+// =================================================================================
+const moveDraw = (sx: number, sy: number) => {
+    // pan‐mode
+    if (tool === "move" && !isDrawing) {
+      const dx = sx - lastMouse.x;
+      const dy = sy - lastMouse.y;
+      setPan(p => ({ x: p.x + dx, y: p.y + dy }));
+      setLastMouse({ x: sx, y: sy });
+      return;
     }
-    if (!isDrawing || !drawCtx.current || !current) return
-    const { x, y } = toCanvas(sx, sy)
-    setCurrent((prev) => (prev ? { ...prev, points: [...prev.points, { x, y }] } : prev))
-    drawCtx.current.lineTo(sx, sy)
-    drawCtx.current.stroke()
-  }
+  
+    // drawing mode
+    if (!isDrawing || !drawCtx.current || !current) return;
+  
+    // convert screen → canvas coords
+    const { x, y } = toCanvas(sx, sy);
+  
+    // record the stroke
+    setCurrent(prev =>
+      prev
+        ? {
+            ...prev,
+            points: [...prev.points, { x, y }],
+          }
+        : prev
+    );
+  
+    // **CRITICAL**: draw at canvas coords
+    drawCtx.current.lineTo(x, y);
+    drawCtx.current.stroke();
+  };
+  
 
   const endDraw = () => {
     if (!isDrawing || !current) return
