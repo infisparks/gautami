@@ -343,8 +343,8 @@ Gautami Hospital`
           patientName={selectedAppointment.patientName}
           patientId={selectedAppointment.patientId}
           appointmentId={selectedAppointment.id}
-          isOpen={prescriptionOpen}
-          onClose={handleClosePrescription}
+          // open={prescriptionOpen}
+          // onClose={handleClosePrescription}
           onSave={handleSavePrescription}
         />
       )}
