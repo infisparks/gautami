@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { type Doctor, PaymentOptions } from "@/types/opd-types"
 
 // Import your letterhead
-const LETTERHEAD_URL = "/letterhead.png"
+const LETTERHEAD_URL = "/letter.png"
 
 interface Appointment {
   id: string

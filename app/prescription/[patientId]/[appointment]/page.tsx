@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { ArrowLeft } from "lucide-react"
 
 // Letterhead URL
-const LETTERHEAD_URL = "/letterhead.png"
+const LETTERHEAD_URL = "/letter.png"
 
 interface Patient {
   name: string
