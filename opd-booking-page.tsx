@@ -11,10 +11,10 @@ import Joyride, { type CallBackProps, STATUS } from "react-joyride"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import AppointmentForm from "@/components/appointment-form"
-import OnCallPatients from "@/components/on-call-patients"
-import TodayAppointments from "@/components/today-appointments"
-import type { OnCallPatient as OnCallPatientType } from "@/types/opd-types"
+import AppointmentForm from "./components/appointment-form"
+import OnCallPatients from "./components/on-call-patients"
+import TodayAppointments from "./components/today-appointments"
+import type { OnCallPatient as OnCallPatientType } from "./types/opd-types"
 
 /** ---------------------------
  *   TYPE & CONSTANT DEFINITIONS
@@ -284,7 +284,7 @@ const OPDBookingPage: React.FC = () => {
                     On-Call Patients
                   </TabsTrigger>
                   <TabsTrigger value="todayAppointments" className="text-sm md:text-base">
-                    Today Appointments
+                    Today's Appointments
                   </TabsTrigger>
                 </TabsList>
 
