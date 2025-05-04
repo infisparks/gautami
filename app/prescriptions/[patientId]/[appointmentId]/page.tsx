@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 import { ChevronLeft, Save } from "lucide-react"
 import { toast } from "react-toastify"
 
-const LETTERHEAD_URL = "/letterhead.png" // Your letterhead URL
+const LETTERHEAD_URL = "/letter.png" // Your letterhead URL
 
 interface Appointment {
   id: string
