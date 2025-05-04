@@ -5,7 +5,7 @@ import type React from "react"
 import { useRef, useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
-import { Eraser, Pencil, Save, Trash2, Move } from "lucide-react"
+import { Eraser, Pencil, Save, Trash2, Move, ZoomIn, ZoomOut } from "lucide-react" // Added Zoom icons
 import { toast } from "react-toastify"
 
 interface PrescriptionCanvasProps {
@@ -29,7 +29,9 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const contextRef = useRef<CanvasRenderingContext2D | null>(null)
-  const [isDrawing, setIsDrawing] = useState(false) // Used for drawing and panning gestures
+  const containerRef = useRef<HTMLDivElement>(null); // Ref for the container div
+
+  const [isDrawing, setIsDrawing] = useState(false)
   const [color, setColor] = useState("#000000")
   const [lineWidth, setLineWidth] = useState(2)
   const [tool, setTool] = useState<DrawingTool>("pen")
@@ -37,7 +39,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
 
   // --- Pan/Zoom State ---
   const [scale, setScale] = useState(1)
-  // panOffset now stores the visual pixel translation applied by CSS transform
+  // panOffset stores the visual pixel translation applied by CSS transform, relative to container's top-left
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
   // Store last *viewport* position for pan calculation (mouse or single touch)
   const lastPanPositionRef = useRef({ x: 0, y: 0 });
@@ -45,6 +47,9 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
   const initialPinchDistanceRef = useRef<number | null>(null);
   // Store the *logical* coordinate under the pinch midpoint at the start of touch zoom
   const initialPinchLogicalMidpointRef = useRef<{ x: number; y: number } | null>(null);
+
+    const minScale = 0.5;
+    const maxScale = 3;
 
 
   // Available colors for quick selection
@@ -66,7 +71,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
         context.stroke()
       }
     },
-    [], // Dependencies removed as contextRef is stable after initial useEffect
+    [],
   )
 
   // Function to get logical coordinates from screen/client coordinates
@@ -87,7 +92,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
 
       return { x: logicalX, y: logicalY }
     },
-    [canvasRef, scale], // Only scale is needed as a dependency here
+    [canvasRef, scale],
   )
 
   // Initialize canvas and load letterhead
@@ -157,6 +162,24 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     };
   }, [letterheadUrl, patientName])
 
+    // Effect to perform initial centering after mount and letterhead load
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        const container = containerRef.current;
+        if (canvas && container && letterheadLoaded) {
+            const containerRect = container.getBoundingClientRect();
+            const canvasLogicalWidth = canvas.width;
+            const canvasLogicalHeight = canvas.height;
+
+            // Calculate pan offset to center the logical canvas at default scale (1)
+            const initialPanX = (containerRect.width - canvasLogicalWidth) / 2;
+            const initialPanY = (containerRect.height - canvasLogicalHeight) / 2;
+
+            // Set initial pan, keep initial scale (which is 1)
+            setPanOffset({ x: initialPanX, y: initialPanY });
+        }
+    }, [letterheadLoaded]); // Recalculate if letterhead finishes loading
+
   // Update context properties when tool, color, or line width changes
   useEffect(() => {
     if (!contextRef.current) return
@@ -214,78 +237,58 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
     initialPinchLogicalMidpointRef.current = null;
   }
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    // Corrected type for WheelEvent handler attached to the div
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (!canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
 
     const zoomFactor = 1.1; // How much to zoom per step
     const delta = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
 
-    const rect = canvasRef.current.getBoundingClientRect();
-    // Cursor position relative to viewport
-    const cursorXViewport = e.clientX;
-    const cursorYViewport = e.clientY;
+    const newScale = Math.max(minScale, Math.min(maxScale, scale * delta));
 
-    // Calculate logical coordinate under cursor *before* zoom
-    const logicalCursorCoords = getLogicalCoords(cursorXViewport, cursorYViewport);
-    if (!logicalCursorCoords) return;
+    // Calculate logical coordinate under cursor *before* zoom
+    // Mouse event clientX/Y are relative to viewport
+    const logicalCursorCoords = getLogicalCoords(e.clientX, e.clientY);
+    if (!logicalCursorCoords) return; // Should not happen if canvas and scale are valid
 
-    const newScale = Math.max(0.5, Math.min(3, scale * delta)); // Limit zoom range
+    // Calculate the new pan offset to keep the logical point under the cursor
+    // New Pan Offset = Current Viewport Cursor Position - (Logical Cursor Position * New Scale)
+    const newPanX = e.clientX - (logicalCursorCoords.x * newScale);
+    const newPanY = e.clientY - (logicalCursorCoords.y * newScale);
 
-    // Calculate new pan offset to keep the same logical point under the cursor
-    // Target Viewport Position = (Logical Pos * New Scale) + New Pan Offset
-    // We want Target Viewport Position to be the original cursor viewport position
-    // cursorXViewport = (logicalCursorCoords.x * newScale) + newPanX
-    // cursorYViewport = (logicalCursorCoords.y * newScale) + newPanY
-    // Note: The pan offset is relative to the canvas's original position (rect.left, rect.top)
-    // So the visual position relative to viewport is (logical * scale + panX + originalCanvasLeft, logical * scale + panY + originalCanvasTop)
-    // Instead, let's calculate the new pan offset required to keep the logical cursor point
-    // at the *same visual distance* from the *newly scaled* canvas's top-left.
-
-    // Visual position relative to *transformed* canvas top-left if only scaling happened
-    const newVisualXRelativeToScaledCanvas = logicalCursorCoords.x * newScale;
-    const newVisualYRelativeToScaledCanvas = logicalCursorCoords.y * newScale;
-
-    // The current cursor position relative to *transformed* canvas top-left is (cursorXViewport - rect.left)
-    // The difference is the required change in the visual pan offset
-    const newPanX = panOffset.x + (cursorXViewport - rect.left) - newVisualXRelativeToScaledCanvas;
-    const newPanY = panOffset.y + (cursorYViewport - rect.top) - newVisualYRelativeToScaledCanvas;
-
-    // A simpler way to calculate new pan for zoom-to-cursor:
-    // The point (logicalCursorCoords.x, logicalCursorCoords.y) was visually at (cursorXViewport, cursorYViewport)
-    // After scaling by `delta`, its visual position would become (logicalCursorCoords.x * scale * delta, logicalCursorCoords.y * scale * delta) relative to original canvas origin.
-    // Its new visual position relative to viewport needs to be (logicalCursorCoords.x * newScale + newPanX, logicalCursorCoords.y * newScale + newPanY).
-    // We want this to equal the cursor viewport position: (cursorXViewport, cursorYViewport)
-    // cursorXViewport = (logicalCursorCoords.x * newScale) + newPanX
-    // newPanX = cursorXViewport - (logicalCursorCoords.x * newScale)
-    // Similarly, newPanY = cursorYViewport - (logicalCursorCoords.y * newScale)
-    // These newPanX/Y values are the required *total* visual pan offsets relative to the viewport origin (0,0)
-    // But our panOffset state is relative to the canvas's original position.
-    // Let's calculate the pan offset needed to align the logical point with the cursor relative to the CANVAS origin (before CSS translate)
-
-    const canvas = canvasRef.current;
-    const rectAfterScaling = canvas.getBoundingClientRect(); // Get bounds *after* potential state update if setScale was async
-
-    // Calculate the coordinate relative to the original canvas top-left if *only* scaling was applied
-    const targetVisualX = logicalCursorCoords.x * newScale;
-    const targetVisualY = logicalCursorCoords.y * newScale;
-
-    // The difference between the desired visual point (cursor relative to original canvas origin)
-    // and where that point would be with just scaling is the required pan offset.
-    // Desired visual point relative to original canvas origin = (cursorXViewport - originalCanvasLeft, cursorYViewport - originalCanvasTop)
-    // Let's use the simpler calculation that worked in step 11 of thought process:
-    // NewPanX = cursorXViewport - (logicalCursorCoords.x * newScale);
-    // NewPanY = cursorYViewport - (logicalCursorCoords.y * newScale);
-    // This is the translation needed relative to viewport origin. Our state is the same.
-
-    const finalNewPanX = cursorXViewport - (logicalCursorCoords.x * newScale);
-    const finalNewPanY = cursorYViewport - (logicalCursorCoords.y * newScale);
-
-
-    setScale(newScale);
-    // Update panOffset based on the cursor point
-    setPanOffset({ x: finalNewPanX, y: finalNewPanY });
+    setScale(newScale);
+    setPanOffset({ x: newPanX, y: newPanY });
    }
+
+    const handleZoom = (zoomType: 'in' | 'out') => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const zoomFactor = 1.2; // Zoom factor for buttons
+        const delta = zoomType === 'in' ? zoomFactor : 1 / zoomFactor;
+
+        const newScale = Math.max(minScale, Math.min(maxScale, scale * delta));
+
+        // Calculate the logical coordinate at the *center* of the container's current view
+        const containerRect = container.getBoundingClientRect();
+        const containerCenterX = containerRect.left + containerRect.width / 2;
+        const containerCenterY = containerRect.top + containerRect.height / 2;
+
+        const logicalCenterCoords = getLogicalCoords(containerCenterX, containerCenterY);
+        if (!logicalCenterCoords) return;
+
+        // Calculate the new pan offset needed to keep this logical center point
+        // at the visual center of the container after scaling
+        const newPanX = containerCenterX - (logicalCenterCoords.x * newScale);
+        const newPanY = containerCenterY - (logicalCenterCoords.y * newScale);
+
+        setScale(newScale);
+        setPanOffset({ x: newPanX, y: newPanY });
+    }
+
 
   // --- Touch Handlers ---
   const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
@@ -320,7 +323,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       initialPinchLogicalMidpointRef.current = getLogicalCoords(midX, midY);
 
       // Store the initial visual midpoint position for calculating pan offset
-      lastPanPositionRef.current = { x: midX, y: midY }; // Reusing ref name, maybe rename to lastGesturePositionRef
+      lastPanPositionRef.current = { x: midX, y: midY }; // Reusing ref name, could be renamed
     }
   }
 
@@ -338,17 +341,34 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       if (!coords) return;
       drawOnCanvas(coords.x, coords.y, true);
       // lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY }; // No need to update pan pos while drawing
-    } else if (touches.length === 1 && tool === "pan" && isDrawing) {
-      // Pan with one finger (only if started as a pan gesture and isDrawing is true)
-      const deltaX = touches[0].clientX - lastPanPositionRef.current.x;
-      const deltaY = touches[0].clientY - lastPanPositionRef.current.y;
+    } else if (touches.length === 1 && tool === "pan") {
+        // Pan with one finger if tool is pan
+        // This handles both starting a pan with one finger OR transitioning from a 2-finger pinch to 1-finger pan
+        if (!isDrawing && initialPinchDistanceRef.current === null) {
+          // If not drawing and not in a pinch gesture, this is a new single-finger pan start
+          setIsDrawing(true); // Mark as drawing state for pan gesture
+          lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY };
+          return; // Skip move logic for the first point
+        }
+        if (!isDrawing) {
+            // If isDrawing is false here, it means we came from a 2-finger gesture or were not drawing/panning
+            // We should only pan if tool is pan AND a pan gesture is "active" (isDrawing is true)
+            // The isDrawing state is set on touch start for 1 finger pan or kept false for 2 finger
+            // The handleTouchEnd logic should manage transition from 2 to 1 finger pan
+            // Let's rely on the isDrawing state being true for panning to occur
+            if (!isDrawing) return;
+        }
 
-      setPanOffset(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
-      lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY }; // Update last pos for next pan move
+
+        const deltaX = touches[0].clientX - lastPanPositionRef.current.x;
+        const deltaY = touches[0].clientY - lastPanPositionRef.current.y;
+
+        setPanOffset(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
+        lastPanPositionRef.current = { x: touches[0].clientX, y: touches[0].clientY }; // Update last pos for next pan move
     }
     else if (touches.length === 2) {
       // Zooming with two fingers
-      if (initialPinchDistanceRef.current === null || !initialPinchLogicalMidpointRef.current) return;
+      if (initialPinchDistanceRef.current === null || !initialPinchLogicalMidpointRef.current) return; // Ensure pinch started correctly
 
       const currentDist = Math.sqrt(
         Math.pow(touches[1].clientX - touches[0].clientX, 2) +
@@ -356,7 +376,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       );
 
       const scaleChange = currentDist / initialPinchDistanceRef.current;
-      const newScale = Math.max(0.5, Math.min(3, scale * scaleChange)); // Limit zoom range
+      const newScale = Math.max(minScale, Math.min(maxScale, scale * scaleChange)); // Limit zoom range
 
       const currentMidXViewport = (touches[0].clientX + touches[1].clientX) / 2;
       const currentMidYViewport = (touches[0].clientY + touches[1].clientY) / 2;
@@ -375,35 +395,30 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       // Update initial pinch distance for smoother subsequent movements
       initialPinchDistanceRef.current = currentDist;
 
-      // No need to update lastPanPositionRef or initialPinchLogicalMidpointRef here for 2-finger gesture
-      // Subsequent moves are relative to the *original* pinch start configuration.
-    } else if (touches.length === 1 && (tool === "pen" || tool === "eraser") && !isDrawing) {
-        // If started with 2 fingers (zoom/pan) and one is lifted, but tool is pen/eraser,
-        // we don't want to start drawing accidentally. Do nothing or handle transition.
-        // Current logic relies on `isDrawing` state preventing this.
-    }
+      // Note: We don't update lastPanPositionRef or initialPinchLogicalMidpointRef here for 2-finger gesture
+      // because subsequent moves are relative to the *original* pinch start configuration.
+    }
   }
 
   const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    // If any touches remain after the gesture, don't completely stop
+    // If any touches remain after the gesture, don't completely stop drawing/pan state
     if (e.touches.length === 0) {
       stopDrawing(); // Call stopDrawing logic (resets isDrawing, closes path, resets refs)
     } else {
-      // If one finger is lifted during a two-finger gesture, we might transition
-      // back to a single-finger pan IF the tool is 'pan'.
-      // Reset isDrawing state based on remaining touches and current tool.
+      // If one finger is lifted during a two-finger gesture, transition state if needed
       const remainingTouches = e.touches.length;
-      const shouldContinuePan = remainingTouches === 1 && tool === 'pan';
-      setIsDrawing(shouldContinuePan);
 
-      // Update the last event position for the remaining touch for potential panning
-      if (remainingTouches === 1) {
-         lastPanPositionRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      if (remainingTouches === 1 && tool === 'pan') {
+        // Transition from 2 fingers to 1 finger pan
+        setIsDrawing(true); // Start 1-finger pan
+        lastPanPositionRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; // Store the position of the remaining finger
       } else {
-            lastPanPositionRef.current = { x: 0, y: 0 }; // Reset if more than one touch remains (shouldn't happen in normal end)
-        }
+        // If tool is not pan, or more than 1 finger remains (shouldn't happen on touchend), stop gesture
+        setIsDrawing(false);
+        lastPanPositionRef.current = { x: 0, y: 0 };
+      }
 
-       // Reset pinch-specific refs as the pinch gesture has ended
+       // Reset pinch-specific refs as the pinch gesture part has ended
        initialPinchDistanceRef.current = null;
        initialPinchLogicalMidpointRef.current = null;
     }
@@ -449,7 +464,18 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       }
       // Reset pan and zoom to default after clearing
       setScale(1);
-      setPanOffset({ x: 0, y: 0 });
+      // Recalculate initial centering pan offset after clearing and resetting scale
+            const container = containerRef.current;
+            if(canvas && container) {
+                 const containerRect = container.getBoundingClientRect();
+                 const canvasLogicalWidth = canvas.width;
+                 const canvasLogicalHeight = canvas.height;
+                 const initialPanX = (containerRect.width - canvasLogicalWidth) / 2;
+                 const initialPanY = (containerRect.height - canvasLogicalHeight) / 2;
+                 setPanOffset({ x: initialPanX, y: initialPanY });
+            } else {
+                 setPanOffset({ x: 0, y: 0 }); // Fallback if refs not ready
+            }
     }
   }
 
@@ -460,43 +486,8 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       return;
     }
 
-    // Temporarily reset transform for accurate blob export
-    const originalTransform = canvasRef.current.style.transform;
-    const originalPan = { ...panOffset };
-    const originalScale = scale;
-
-    // Apply default transform visually *before* creating blob
-    // Note: Directly manipulating DOM like this can sometimes be tricky with React state updates.
-    // A more robust solution might involve drawing to an offscreen canvas for the blob.
-    // For this fix, let's try temporarily resetting the visual transform.
-    // Consider drawing to a hidden canvas at 1x scale for the final image.
-    // For simplicity, we'll try resetting the style first.
-    // If this causes visual flicker or issues, an offscreen canvas is better.
-
-    // Let's try the offscreen canvas approach as it's safer
-    const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = canvasRef.current.width; // Logical width
-    exportCanvas.height = canvasRef.current.height; // Logical height
-    const exportCtx = exportCanvas.getContext('2d');
-
-    if (!exportCtx || !contextRef.current) {
-        toast.error("Could not create export canvas.");
-        return;
-    }
-
-    // Copy the current drawing context content to the export canvas
-    // We need to draw the original content (letterhead etc.) and then the drawing strokes.
-    // This is tricky because we don't store strokes separately.
-    // The simplest way using the current structure is to draw the visible canvas content.
-    // However, canvas.toBlob captures the *logical* canvas content, not the visually transformed one.
-    // The drawing strokes are already on the logical canvas. The letterhead is also drawn there.
-    // So canvasRef.current.toBlob should capture the correct *content*, regardless of CSS transform.
-    // The only risk is if the initial drawing of letterhead or patient info happened
-    // *before* the canvas size was fully set or context was ready, but that's handled in useEffect.
-
-    // Let's revert to the simpler logic: canvas.toBlob should work directly on the logical canvas state.
-    // The visual transform is only a CSS presentation layer.
-
+    // The canvas.toBlob() method captures the *logical* content of the canvas,
+    // ignoring the CSS transform. This is the desired behavior for saving.
     canvasRef.current.toBlob((blob) => {
       if (blob) {
         onSave(blob).catch(err => {
@@ -520,7 +511,7 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
 
 
   return (
-    <div className="flex flex-col items-center p-4 w-full h-full overflow-hidden relative">
+    <div className="flex flex-col items-center p-4 w-full h-full relative"> {/* Removed overflow-hidden here */}
       {/* Control Bar */}
       <div className="flex flex-wrap gap-2 mb-4 w-full justify-center bg-white shadow-md dark:bg-gray-800 p-3 rounded-md z-10 sticky top-0 left-0 right-0">
         <div className="flex items-center gap-2">
@@ -574,6 +565,18 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
           </div>
         )}
 
+        {/* Zoom Controls */}
+        <div className="flex items-center gap-1">
+            <Button size="sm" variant="outline" onClick={() => handleZoom('out')} disabled={scale <= minScale || !letterheadLoaded}>
+                <ZoomOut className="h-4 w-4" />
+            </Button>
+             <span className="text-sm">{Math.round(scale * 100)}%</span>
+            <Button size="sm" variant="outline" onClick={() => handleZoom('in')} disabled={scale >= maxScale || !letterheadLoaded}>
+                 <ZoomIn className="h-4 w-4" />
+            </Button>
+        </div>
+
+
         <Button size="sm" variant="destructive" onClick={clearCanvas} disabled={!letterheadLoaded}>
           <Trash2 className="h-4 w-4 mr-1" />
           Clear
@@ -583,8 +586,9 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
       </div>
 
       {/* Canvas Container - handles visual pan/zoom and scroll overflow */}
-      <div className="relative w-full h-full overflow-auto flex justify-center items-start"
-          onWheel={handleWheel} // Mouse wheel zoom
+      {/* Removed justify-center items-start to allow simpler pan/scroll calculation */}
+      <div ref={containerRef} className="relative w-full h-full overflow-auto"
+          onWheel={handleWheel} // Mouse wheel zoom handler with corrected type
           style={{ cursor: getCursorStyle() }} // Apply cursor style to container
       >
           {/* Canvas element - drawing context operates at fixed logical size */}
@@ -604,10 +608,14 @@ const PrescriptionCanvas: React.FC<PrescriptionCanvasProps> = ({
             transformOrigin: '0 0', // Scale and translate from the top-left corner
             transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`,
              // Explicitly set width/height for logical size
-            width: '800px',
+            width: '800px', // These control the *logical* size, not the visual size after scale
             height: '1100px',
              // Cursor is handled by the parent container div
              cursor: 'inherit',
+             // Setting display block can sometimes help with layout inside flex/grid or with overflow
+             display: 'block',
+             // Ensure the canvas itself doesn't overflow its natural size before transform (not strictly necessary with current setup)
+             // overflow: 'visible', // This is default, just being explicit if needed
           }}
         />
       </div>
